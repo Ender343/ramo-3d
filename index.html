@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ramo de Rosas 3D · Amor Siempre</title>
+<style>
+  :root{ --bg:#0a0206; }
+  html,body{ margin:0; padding:0; width:100%; height:100%; background:var(--bg); overflow:hidden; font-family: Georgia, 'Times New Roman', serif; }
+  #scene-canvas{ position:fixed; inset:0; display:block; }
+  #ui{
+    position:fixed; left:0; right:0; bottom:0; z-index:10;
+    display:flex; flex-direction:column; align-items:center; gap:10px;
+    padding:18px 16px 22px; pointer-events:none;
+    background:linear-gradient(to top, rgba(5,0,2,.75), transparent);
+  }
+  #caption{
+    color:#ffd7dd; letter-spacing:.12em; font-size:13px; text-transform:uppercase;
+    text-shadow:0 0 12px rgba(255,40,70,.8), 0 0 2px #000; opacity:.9;
+  }
+  #controls{ display:flex; gap:10px; pointer-events:auto; }
+  button{
+    background:rgba(20,4,8,.55); color:#ffdfe4; border:1px solid rgba(255,90,110,.55);
+    padding:8px 14px; border-radius:999px; font-size:12px; letter-spacing:.06em;
+    cursor:pointer; backdrop-filter: blur(6px); transition:all .2s ease;
+  }
+  button:hover{ background:rgba(255,40,70,.25); box-shadow:0 0 16px rgba(255,40,70,.5); }
+  #loading{
+    position:fixed; inset:0; z-index:20; background:#0a0206; color:#ffb3bd;
+    display:flex; align-items:center; justify-content:center; font-size:14px; letter-spacing:.2em;
+    text-transform:uppercase; transition:opacity .6s ease;
+  }
+</style>
+</head>
+<body>
+<div id="loading">Floreciendo…</div>
+<canvas id="scene-canvas"></canvas>
+<div id="ui">
+  <div id="caption">Las mejores cosas florecen · Con todo mi corazón</div>
+  <div id="controls">
+    <button id="btnSpin">⏸ Pausar giro</button>
+    <button id="btnReset">↺ Reiniciar vista</button>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+/* ---------------------------------------------------------
+   RAMO DE ROSAS 3D — cámara orbital + fondo con parallax
+--------------------------------------------------------- */
+
+const canvas = document.getElementById('scene-canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:false, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x0a0206, 0.028);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth/window.innerHeight, 0.1, 200);
+camera.position.set(0, 3.6, 9.5);
+
+/* ============ CONTROLS (auto-orbit + user drag) ============ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.6, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 5;
+controls.maxDistance = 16;
+controls.maxPolarAngle = Math.PI * 0.62;
+controls.minPolarAngle = Math.PI * 0.18;
+controls.enablePan = false;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.1;
+
+/* ============ FLOOR (reflective dark marble) ============ */
+const floorGeo = new THREE.CircleGeometry(30, 64);
+const floorMat = new THREE.MeshStandardMaterial({
+  color: 0x0c0507, metalness: 0.65, roughness: 0.18,
+  envMapIntensity: 1.4
+});
+const floor = new THREE.Mesh(floorGeo, floorMat);
+floor.rotation.x = -Math.PI/2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+// subtle floor grid streaks for marble veining
+const veinCanvas = document.createElement('canvas');
+veinCanvas.width = veinCanvas.height = 512;
+const vctx = veinCanvas.getContext('2d');
+vctx.fillStyle = '#0c0507'; vctx.fillRect(0,0,512,512);
+vctx.strokeStyle = 'rgba(120,20,30,0.25)'; vctx.lineWidth = 1.4;
+for(let i=0;i<40;i++){
+  vctx.beginPath();
+  let x = Math.random()*512, y=0;
+  vctx.moveTo(x,y);
+  for(let j=0;j<8;j++){ x += (Math.random()-0.5)*90; y += 64; vctx.lineTo(x,y); }
+  vctx.stroke();
+}
+const veinTex = new THREE.CanvasTexture(veinCanvas);
+veinTex.wrapS = veinTex.wrapT = THREE.RepeatWrapping;
+veinTex.repeat.set(4,4);
+floorMat.roughnessMap = veinTex;
+floorMat.bumpMap = veinTex;
+floorMat.bumpScale = 0.02;
+
+/* ============ LIGHTING ============ */
+scene.add(new THREE.AmbientLight(0x220810, 0.5));
+
+const keyLight = new THREE.SpotLight(0xfff0e8, 55, 30, Math.PI/5, 0.4, 1.4);
+keyLight.position.set(4, 9, 5);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(1024,1024);
+keyLight.shadow.bias = -0.001;
+scene.add(keyLight);
+scene.add(keyLight.target);
+keyLight.target.position.set(0,2.5,0);
+
+const pinkRim = new THREE.PointLight(0xff1744, 18, 20, 2);
+pinkRim.position.set(-5, 3, -4);
+scene.add(pinkRim);
+
+const magentaRim = new THREE.PointLight(0xff2d7a, 14, 18, 2);
+magentaRim.position.set(5, 2, -5);
+scene.add(magentaRim);
+
+const goldFill = new THREE.PointLight(0xffb37a, 8, 12, 2);
+goldFill.position.set(0, 1.5, 4);
+scene.add(goldFill);
+
+const heartLight = new THREE.PointLight(0xff3366, 10, 25, 2);
+heartLight.position.set(0, 6, -8);
+scene.add(heartLight);
+
+/* ============ MATERIALS ============ */
+const petalMat = new THREE.MeshPhysicalMaterial({
+  color: 0xb3081f, roughness: 0.35, clearcoat: 0.6, clearcoatRoughness:0.3,
+  sheen: 1.0, sheenColor: 0xff4060, side: THREE.DoubleSide
+});
+const petalMatDark = new THREE.MeshPhysicalMaterial({
+  color: 0x7a0414, roughness: 0.4, clearcoat: 0.5, clearcoatRoughness:0.35,
+  sheen: 0.8, sheenColor: 0xcc1030, side: THREE.DoubleSide
+});
+const leafMat = new THREE.MeshStandardMaterial({ color: 0x0f3d1c, roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide });
+const stemMat = new THREE.MeshStandardMaterial({ color: 0x1c4a24, roughness: 0.6 });
+const wrapMat = new THREE.MeshPhysicalMaterial({
+  color: 0x060606, roughness: 0.25, metalness: 0.1, clearcoat: 0.9, clearcoatRoughness: 0.15,
+  side: THREE.DoubleSide
+});
+const wrapEdgeMat = new THREE.MeshStandardMaterial({ color: 0xc9962f, metalness: 0.85, roughness: 0.28 });
+const ribbonMat = new THREE.MeshPhysicalMaterial({
+  color: 0xb30f22, roughness: 0.22, clearcoat: 0.85, clearcoatRoughness: 0.2, side: THREE.DoubleSide
+});
+const babyBreathMat = new THREE.MeshStandardMaterial({ color: 0xfff6ee, roughness: 0.6, emissive: 0x221111, emissiveIntensity: 0.15 });
+const tagMat = new THREE.MeshStandardMaterial({ color: 0x0c0c0c, roughness: 0.4, metalness: 0.3 });
+const tagGoldMat = new THREE.MeshStandardMaterial({ color: 0xd4a544, metalness: 0.9, roughness: 0.25 });
+
+/* ============ PROCEDURAL ROSE ============ */
+function makePetal(scale=1){
+  const shape = new THREE.Shape();
+  shape.moveTo(0,0);
+  shape.bezierCurveTo(0.5,0.15, 0.55,0.85, 0,1.15);
+  shape.bezierCurveTo(-0.55,0.85, -0.5,0.15, 0,0);
+  const geo = new THREE.ShapeGeometry(shape, 8);
+  geo.scale(0.5*scale,0.5*scale,0.5*scale);
+  // curl the petal via vertex displacement
+  const pos = geo.attributes.position;
+  for(let i=0;i<pos.count;i++){
+    const x = pos.getX(i), y = pos.getY(i);
+    const curl = Math.sin((y/ (0.6*scale)) * Math.PI*0.5) * 0.22 * scale;
+    pos.setZ(i, pos.getZ(i) + curl - Math.abs(x)*0.15*scale);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function makeRose(size=1){
+  const group = new THREE.Group();
+  const layers = [
+    { count:5,  radius:0.02, scale:0.34, tilt:0.15, mat: petalMatDark },
+    { count:6,  radius:0.06, scale:0.48, tilt:0.35, mat: petalMat },
+    { count:7,  radius:0.11, scale:0.62, tilt:0.55, mat: petalMat },
+    { count:6,  radius:0.16, scale:0.78, tilt:0.85, mat: petalMatDark },
+    { count:6,  radius:0.20, scale:0.92, tilt:1.15, mat: petalMat },
+  ];
+  layers.forEach((layer, li) => {
+    const geo = makePetal(layer.scale * size);
+    for(let i=0;i<layer.count;i++){
+      const petal = new THREE.Mesh(geo, layer.mat);
+      const angle = (i/layer.count)*Math.PI*2 + li*0.5;
+      petal.position.set(Math.cos(angle)*layer.radius*size, layer.radius*0.5*size, Math.sin(angle)*layer.radius*size);
+      petal.rotation.y = -angle + Math.PI/2;
+      petal.rotation.x = layer.tilt;
+      petal.rotation.z = (Math.random()-0.5)*0.2;
+      petal.castShadow = true;
+      group.add(petal);
+    }
+  });
+  // small bud core
+  const core = new THREE.Mesh(new THREE.SphereGeometry(0.08*size,8,8), petalMatDark);
+  core.position.y = 0.05*size;
+  group.add(core);
+  return group;
+}
+
+function makeLeafCluster(size=1){
+  const group = new THREE.Group();
+  const leafShape = new THREE.Shape();
+  leafShape.moveTo(0,0);
+  leafShape.quadraticCurveTo(0.35,0.4,0,1);
+  leafShape.quadraticCurveTo(-0.35,0.4,0,0);
+  const geo = new THREE.ShapeGeometry(leafShape, 6);
+  geo.scale(0.45*size,0.45*size,0.45*size);
+  for(let i=0;i<3;i++){
+    const leaf = new THREE.Mesh(geo, leafMat);
+    const a = (i/3)*Math.PI*2 + Math.random();
+    leaf.rotation.y = a;
+    leaf.rotation.x = 0.9 + Math.random()*0.3;
+    leaf.castShadow = true;
+    group.add(leaf);
+  }
+  return group;
+}
+
+function makeBabyBreath(){
+  const group = new THREE.Group();
+  const sphGeo = new THREE.SphereGeometry(0.045,6,6);
+  const n = 5 + Math.floor(Math.random()*4);
+  for(let i=0;i<n;i++){
+    const s = new THREE.Mesh(sphGeo, babyBreathMat);
+    s.position.set((Math.random()-0.5)*0.25,(Math.random())*0.3,(Math.random()-0.5)*0.25);
+    s.scale.setScalar(0.6+Math.random()*0.7);
+    group.add(s);
+  }
+  return group;
+}
+
+/* ============ BOUQUET ASSEMBLY ============ */
+const bouquet = new THREE.Group();
+scene.add(bouquet);
+
+const roseHeadPositions = [
+  [0,2.55,0, 1.0],
+  [-0.45,2.35,0.35, 0.85], [0.45,2.35,-0.35, 0.85], [-0.4,2.4,-0.4,0.82], [0.42,2.32,0.4,0.88],
+  [-0.85,2.05,0.15,0.78], [0.85,2.05,-0.15,0.8], [0,2.1,0.85,0.82], [0,2.15,-0.82,0.76],
+  [-0.7,1.95,-0.6,0.75], [0.72,1.9,0.6,0.78], [-0.55,1.85,0.75,0.7], [0.5,1.8,-0.78,0.72],
+  [-1.05,1.75,-0.15,0.68], [1.05,1.7,0.2,0.7], [0.15,1.65,1.05,0.66], [-0.15,1.6,-1.05,0.68],
+];
+
+const stemBaseY = 0.15;
+roseHeadPositions.forEach(([x,y,z,scale], idx) => {
+  const rose = makeRose(scale);
+  rose.position.set(x,y,z);
+  rose.rotation.y = Math.random()*Math.PI*2;
+  rose.rotation.x = (Math.random()-0.5)*0.25;
+  rose.rotation.z = (Math.random()-0.5)*0.25;
+  bouquet.add(rose);
+
+  // stem from base to rose
+  const stemCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(x*0.08, stemBaseY, z*0.08),
+    new THREE.Vector3(x*0.5, y*0.55, z*0.5),
+    new THREE.Vector3(x, y-0.15, z),
+  ]);
+  const stemGeo = new THREE.TubeGeometry(stemCurve, 12, 0.028, 6, false);
+  const stem = new THREE.Mesh(stemGeo, stemMat);
+  stem.castShadow = true;
+  bouquet.add(stem);
+
+  if(idx % 3 === 0){
+    const leaves = makeLeafCluster(0.9);
+    leaves.position.set(x*0.6, y*0.5, z*0.6);
+    leaves.rotation.y = Math.random()*Math.PI*2;
+    bouquet.add(leaves);
+  }
+  if(idx % 2 === 0){
+    const bb = makeBabyBreath();
+    bb.position.set(x + (Math.random()-0.5)*0.3, y+0.2, z + (Math.random()-0.5)*0.3);
+    bouquet.add(bb);
+  }
+});
+
+/* ============ WRAPPING PAPER (cone, black + gold edge) ============ */
+const wrapGeo = new THREE.ConeGeometry(1.35, 2.6, 24, 1, true);
+const wrap = new THREE.Mesh(wrapGeo, wrapMat);
+wrap.position.y = 0.9;
+wrap.castShadow = true;
+wrap.receiveShadow = true;
+bouquet.add(wrap);
+
+// fold flaps (a few angled planes around the top for the "petal wrap" look)
+const flapShape = new THREE.Shape();
+flapShape.moveTo(-0.55,0);
+flapShape.lineTo(0.55,0);
+flapShape.lineTo(0.15,1.6);
+flapShape.lineTo(-0.1,1.9);
+flapShape.lineTo(-0.55,1.4);
+flapShape.closePath();
+const flapGeo = new THREE.ShapeGeometry(flapShape);
+const flapCount = 8;
+for(let i=0;i<flapCount;i++){
+  const flap = new THREE.Mesh(flapGeo, i%2===0 ? wrapMat : wrapMat.clone());
+  const a = (i/flapCount)*Math.PI*2;
+  const radius = 1.05;
+  flap.position.set(Math.cos(a)*radius, 1.55, Math.sin(a)*radius);
+  flap.lookAt(new THREE.Vector3(Math.cos(a)*radius*2, 2.5, Math.sin(a)*radius*2));
+  flap.rotateY(Math.PI);
+  flap.scale.setScalar(0.85 + Math.random()*0.3);
+  flap.castShadow = true;
+  bouquet.add(flap);
+
+  // gold edge trim as a thin torus-ish line along flap edge (simple approach: scaled outline)
+  const edge = new THREE.Mesh(flapGeo, wrapEdgeMat);
+  edge.scale.set(1.03,1.03,1.03);
+  edge.position.copy(flap.position);
+  edge.rotation.copy(flap.rotation);
+  edge.position.y -= 0.005;
+  edge.renderOrder = -1;
+  bouquet.add(edge);
+}
+
+/* ============ RIBBON BOW ============ */
+function makeRibbonLoop(width=0.35, length=0.9, twist=0.5){
+  const shape = new THREE.Shape();
+  shape.moveTo(-width/2,0);
+  shape.lineTo(width/2,0);
+  shape.lineTo(width/2,length);
+  shape.lineTo(-width/2,length);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, { depth:0.02, bevelEnabled:false });
+  geo.translate(0,0,-0.01);
+  return geo;
+}
+const bow = new THREE.Group();
+bow.position.set(0,1.05,1.05);
+
+const loopGeo = makeRibbonLoop(0.32,0.85);
+[[-1,0.55],[1,0.55]].forEach(([dir,rot])=>{
+  const loop = new THREE.Mesh(loopGeo, ribbonMat);
+  loop.position.set(dir*0.28,0.15,0);
+  loop.rotation.z = dir*1.05;
+  loop.rotation.y = dir*0.3;
+  loop.castShadow = true;
+  bow.add(loop);
+});
+// bow knot center
+const knot = new THREE.Mesh(new THREE.SphereGeometry(0.16,12,10), ribbonMat);
+knot.scale.set(1,0.8,0.8);
+knot.castShadow = true;
+bow.add(knot);
+// tails hanging down
+[[-0.14,-0.05],[0.14,0.08]].forEach(([xOff,zOff])=>{
+  const tailShape = new THREE.Shape();
+  tailShape.moveTo(-0.09,0);
+  tailShape.lineTo(0.09,0);
+  tailShape.lineTo(0.05,-1.3);
+  tailShape.lineTo(0,-1.5);
+  tailShape.lineTo(-0.05,-1.3);
+  tailShape.closePath();
+  const tailGeo = new THREE.ExtrudeGeometry(tailShape, { depth:0.015, bevelEnabled:false });
+  const tail = new THREE.Mesh(tailGeo, ribbonMat);
+  tail.position.set(xOff,0,zOff);
+  tail.rotation.x = -0.1;
+  tail.castShadow = true;
+  bow.add(tail);
+});
+bouquet.add(bow);
+
+/* ============ TAGS (paper cards, text via canvas textures) ============ */
+function makeTagTexture(lines, w=256,h=256){
+  const c = document.createElement('canvas'); c.width=w; c.height=h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#0c0c0c'; ctx.fillRect(0,0,w,h);
+  ctx.strokeStyle = '#d4a544'; ctx.lineWidth = 6;
+  ctx.strokeRect(10,10,w-20,h-20);
+  ctx.fillStyle = '#d4a544';
+  ctx.textAlign = 'center';
+  ctx.font = '600 28px Georgia';
+  lines.forEach((line,i)=> ctx.fillText(line, w/2, h/2 - (lines.length-1)*18 + i*38));
+  ctx.font = '40px Georgia';
+  ctx.fillText('♡', w/2, h/2 + (lines.length)*30 + 10);
+  return new THREE.CanvasTexture(c);
+}
+const tagGeo = new THREE.PlaneGeometry(0.5,0.5);
+const tag1Mat = new THREE.MeshStandardMaterial({ map: makeTagTexture(['Para alguien','especial']), side: THREE.DoubleSide, roughness:0.5 });
+const tag1 = new THREE.Mesh(tagGeo, tag1Mat);
+tag1.position.set(0.75,3.1,-0.2);
+tag1.rotation.y = -0.5;
+bouquet.add(tag1);
+
+const tag2Mat = new THREE.MeshStandardMaterial({ map: makeTagTexture(['Con todo','mi corazón']), side: THREE.DoubleSide, roughness:0.5 });
+const tag2 = new THREE.Mesh(new THREE.PlaneGeometry(0.42,0.42), tag2Mat);
+tag2.position.set(0.05,0.35,1.15);
+tag2.rotation.x = -0.3;
+bouquet.add(tag2);
+
+/* ============ PARALLAX NEON BACKGROUND ============ */
+/* Layers at different depths react to camera movement for a parallax feel. */
+const bgGroup = new THREE.Group();
+scene.add(bgGroup);
+
+function makeNeonTextTexture(text, color='#ff3366', w=512,h=256){
+  const c = document.createElement('canvas'); c.width=w; c.height=h;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,w,h);
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font = '700 46px Georgia';
+  ctx.shadowColor = color; ctx.shadowBlur = 30;
+  ctx.fillStyle = color;
+  const lines = text.split('\n');
+  lines.forEach((line,i)=> ctx.fillText(line, w/2, h/2 + (i-(lines.length-1)/2)*54));
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = '#fff';
+  lines.forEach((line,i)=> ctx.fillText(line, w/2, h/2 + (i-(lines.length-1)/2)*54));
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function makeNeonHeartTexture(color='#ff1744', w=256,h=256){
+  const c = document.createElement('canvas'); c.width=w; c.height=h;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,w,h);
+  ctx.translate(w/2,h/2*0.85);
+  ctx.beginPath();
+  const s = 70;
+  ctx.moveTo(0, s*0.3);
+  ctx.bezierCurveTo(0,-s*0.3, -s,-s*0.5, -s, s*0.05);
+  ctx.bezierCurveTo(-s, s*0.55, -s*0.3, s*0.8, 0, s*1.15);
+  ctx.bezierCurveTo(s*0.3, s*0.8, s, s*0.55, s, s*0.05);
+  ctx.bezierCurveTo(s, -s*0.5, 0, -s*0.3, 0, s*0.3);
+  ctx.closePath();
+  ctx.shadowColor = color; ctx.shadowBlur = 35;
+  ctx.strokeStyle = color; ctx.lineWidth = 6; ctx.stroke();
+  ctx.shadowBlur = 15;
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  return new THREE.CanvasTexture(c);
+}
+
+const spriteMat = (tex) => new THREE.SpriteMaterial({ map: tex, transparent:true, depthWrite:false });
+
+const neonLayers = [
+  // far layer
+  { depth:-22, items:[
+      { tex: makeNeonTextTexture('Las mejores\ncosas florécen','#ff2d7a'), pos:[-8,4.2,0], scale:[6,3] },
+      { tex: makeNeonHeartTexture('#ff1744'), pos:[8.5,5.5,0], scale:[4,4] },
+    ]},
+  // mid layer
+  { depth:-14, items:[
+      { tex: makeNeonTextTexture('Amor\nSiempre','#ff3366'), pos:[9,2.2,0], scale:[4.5,2.5] },
+      { tex: makeNeonHeartTexture('#ff2d7a'), pos:[-9.5,0.8,0], scale:[3,3] },
+    ]},
+  // near-ish accent layer
+  { depth:-9, items:[
+      { tex: makeNeonHeartTexture('#ff0033'), pos:[6.5,-0.5,0], scale:[1.8,1.8] },
+      { tex: makeNeonHeartTexture('#ff0033'), pos:[-6,4.6,0], scale:[1.3,1.3] },
+    ]},
+];
+
+const parallaxLayers = [];
+neonLayers.forEach(layer => {
+  const holder = new THREE.Group();
+  holder.position.z = layer.depth;
+  layer.items.forEach(it => {
+    const sprite = new THREE.Sprite(spriteMat(it.tex));
+    sprite.position.set(it.pos[0], it.pos[1], it.pos[2]);
+    sprite.scale.set(it.scale[0], it.scale[1], 1);
+    holder.add(sprite);
+  });
+  bgGroup.add(holder);
+  parallaxLayers.push({ group: holder, depth: layer.depth, factor: THREE.MathUtils.clamp(1 - Math.abs(layer.depth)/24, 0.15, 0.9) });
+});
+
+// backdrop panel (subtle vertical gradient wall) behind everything, also parallaxes a little
+const backWallGeo = new THREE.PlaneGeometry(60,30);
+const backWallCanvas = document.createElement('canvas');
+backWallCanvas.width=64; backWallCanvas.height=64;
+const bwctx = backWallCanvas.getContext('2d');
+const grad = bwctx.createLinearGradient(0,0,0,64);
+grad.addColorStop(0,'#170307');
+grad.addColorStop(0.5,'#0c0203');
+grad.addColorStop(1,'#050102');
+bwctx.fillStyle = grad; bwctx.fillRect(0,0,64,64);
+const backWallTex = new THREE.CanvasTexture(backWallCanvas);
+const backWall = new THREE.Mesh(backWallGeo, new THREE.MeshBasicMaterial({ map: backWallTex }));
+backWall.position.set(0,5,-26);
+bgGroup.add(backWall);
+parallaxLayers.push({ group: backWall, depth: -26, factor: 0.08 });
+
+// floor reflections of neon (colored point lights already do some of this via pinkRim/magentaRim)
+
+/* mirrored floor text hint using a duplicated, flipped sprite group for "reflection" look */
+const reflectGroup = new THREE.Group();
+reflectGroup.scale.y = -1;
+reflectGroup.position.y = -0.02;
+neonLayers.forEach((layer, li) => {
+  const holder = parallaxLayers[li].group;
+  const mirror = holder.clone();
+  mirror.traverse(o => { if(o.material){ o.material = o.material.clone(); o.material.opacity = 0.18; } });
+  reflectGroup.add(mirror);
+});
+scene.add(reflectGroup);
+
+/* ============ ENVIRONMENT MAP (for reflections/clearcoat) ============ */
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envScene = new THREE.Scene();
+envScene.background = new THREE.Color(0x1a0508);
+const envLight1 = new THREE.Mesh(new THREE.SphereGeometry(5,16,16), new THREE.MeshBasicMaterial({color:0xff2d5a}));
+envLight1.position.set(10,10,-10); envScene.add(envLight1);
+const envTex = pmrem.fromScene(envScene, 0.1).texture;
+scene.environment = envTex;
+envScene.clear && envScene.clear();
+
+/* ============ RESIZE ============ */
+function onResize(){
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+/* ============ UI BUTTONS ============ */
+const btnSpin = document.getElementById('btnSpin');
+btnSpin.addEventListener('click', () => {
+  controls.autoRotate = !controls.autoRotate;
+  btnSpin.textContent = controls.autoRotate ? '⏸ Pausar giro' : '▶ Reanudar giro';
+});
+document.getElementById('btnReset').addEventListener('click', () => {
+  camera.position.set(0,3.6,9.5);
+  controls.target.set(0,2.6,0);
+  controls.update();
+});
+
+/* ============ ANIMATE ============ */
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  const dt = clock.getDelta();
+
+  // gentle bob for the whole bouquet (life-like sway)
+  bouquet.position.y = Math.sin(t*0.6)*0.03;
+  bouquet.rotation.y += 0.0008;
+
+  controls.update();
+
+  // PARALLAX: shift each background layer opposite-ish to camera azimuth, scaled by depth factor
+  const camAngle = Math.atan2(camera.position.x, camera.position.z);
+  parallaxLayers.forEach(pl => {
+    pl.group.position.x = -Math.sin(camAngle) * 6 * pl.factor;
+    pl.group.position.y = 5 + Math.cos(t*0.15 + pl.depth) * 0.15 * pl.factor + (camera.position.y-3.6)*0.15*pl.factor;
+  });
+
+  // flicker on neon sprites (subtle)
+  bgGroup.traverse(o => {
+    if(o.isSprite){
+      o.material.opacity = 0.85 + Math.sin(t*6 + o.position.x)*0.08 + (Math.random()<0.003 ? -0.3:0);
+    }
+  });
+
+  // light shimmer
+  pinkRim.intensity = 16 + Math.sin(t*1.3)*3;
+  magentaRim.intensity = 12 + Math.cos(t*1.7)*3;
+  heartLight.intensity = 9 + Math.sin(t*2.1)*2;
+
+  renderer.render(scene, camera);
+}
+
+const loading = document.getElementById('loading');
+setTimeout(() => {
+  loading.style.opacity = '0';
+  setTimeout(()=> loading.style.display='none', 650);
+}, 400);
+
+animate();
+</script>
+</body>
+</html>
