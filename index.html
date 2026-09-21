@@ -597,18 +597,27 @@ tag2.position.set(0.05,0.35,1.15);
 tag2.rotation.x = -0.3;
 bouquet.add(tag2);
 
-/* ============ "TE AMO" NEON SIGN AT THE BASE OF THE WRAP ============ */
-/* A big glowing neon sign sitting right at the base of the paper cone, near the
-   ribbon. It's a Sprite so it always faces the camera as the scene orbits, and
-   its size/brightness pulse with the music (makeNeonTextTexture is defined
-   further below but hoisted, since it's a function declaration). */
+/* ============ "TE AMO" NEON SIGNS AROUND THE BASE OF THE WRAP ============ */
+/* Three big glowing neon signs spaced evenly around the base of the paper cone.
+   Each is a Sprite so it always faces the camera as the scene orbits (as the
+   bouquet slowly turns, a different one swings into view), and all three
+   pulse together with the music (makeNeonTextTexture is defined further below
+   but hoisted, since it's a function declaration). */
 const loveTex = makeNeonTextTexture('TE AMO', '#ff0022', 720, 260);
-const loveBaseScale = { x: 3.4, y: 1.23 };
-const loveMat = new THREE.SpriteMaterial({ map: loveTex, transparent:true, depthWrite:false, blending: THREE.AdditiveBlending });
-const loveSign = new THREE.Sprite(loveMat);
-loveSign.position.set(0, -0.15, 1.55);
-loveSign.scale.set(loveBaseScale.x, loveBaseScale.y, 1);
-bouquet.add(loveSign);
+const loveBaseScale = { x: 3.2, y: 1.16 };
+const LOVE_COUNT = 3;
+const loveRadius = 1.65;
+const loveSigns = [];
+for(let i=0;i<LOVE_COUNT;i++){
+  const angle = (i/LOVE_COUNT)*Math.PI*2;
+  const loveMat = new THREE.SpriteMaterial({ map: loveTex, transparent:true, depthWrite:false, blending: THREE.AdditiveBlending });
+  const sign = new THREE.Sprite(loveMat);
+  sign.position.set(Math.sin(angle)*loveRadius, -0.15, Math.cos(angle)*loveRadius);
+  sign.scale.set(loveBaseScale.x, loveBaseScale.y, 1);
+  sign.userData.phase = i * 1.7;
+  bouquet.add(sign);
+  loveSigns.push(sign);
+}
 
 /* ============ 360° NEON CYCLORAMA BACKGROUND ============ */
 /* A flat backdrop only covers the angle it faces — orbit the camera past it and
@@ -904,10 +913,12 @@ function animate(){
   updateAudioLevels();
   const { bass, mid, treble } = audioLevel;
 
-  // "TE AMO" sign at the base: pulses bigger/brighter with the beat, flickers with the treble
-  const loveThump = 1 + bass*0.22 + Math.sin(t*2.4)*0.015;
-  loveSign.scale.set(loveBaseScale.x*loveThump, loveBaseScale.y*loveThump, 1);
-  loveSign.material.opacity = 0.82 + treble*0.18 + (Math.random()<0.004 ? -0.35:0);
+  // "TE AMO" signs at the base: pulse bigger/brighter with the beat, flicker with the treble
+  loveSigns.forEach(sign => {
+    const loveThump = 1 + bass*0.22 + Math.sin(t*2.4 + sign.userData.phase)*0.015;
+    sign.scale.set(loveBaseScale.x*loveThump, loveBaseScale.y*loveThump, 1);
+    sign.material.opacity = 0.82 + treble*0.18 + (Math.random()<0.004 ? -0.35:0);
+  });
 
   // animated water surface (real ripple/wave shader) + falling rain + splash rings
   // (the 360° sky-dome needs no manual parallax shift — the neon signs are placed
