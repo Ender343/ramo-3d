@@ -445,76 +445,81 @@ roseHeadPositions.forEach(([x,y,z,scale], idx) => {
 });
 
 /* ============ WRAPPING PAPER (pleated paper cone, high-detail) ============ */
-/* A plain ConeGeometry reads as a mathematical shape, not paper — so we take a
-   dense cone mesh and fold it: sharp radial pleats (like a gathered paper skirt),
-   fine crinkle noise for surface irregularity, and an uneven ruffled hem at the
-   wide bottom edge instead of a perfect circle. A gold tube traces that same
-   ruffled hem to match the wrap's trim. */
-const wrapRadius = 1.35, wrapHeight = 2.6, wrapRadial = 96, wrapHeightSeg = 14, wrapPleats = 18;
+/* Real bouquet wrap opens WIDE at the top (around the flower heads) and gathers
+   to a narrow neck at the bottom (where the ribbon ties it) — a truncated cone
+   (frustum), not a cone tapering to a point. It's built as a dense cylinder mesh
+   folded with sharp radial pleats (like a gathered paper skirt), fine crinkle
+   noise for surface irregularity, and an irregular torn/ruffled edge at the open
+   TOP rim instead of a perfect circle — with a gold tube tracing that same torn
+   top edge, right where the paper opens around the flowers. */
+const wrapRadiusTop = 1.5;     // wide open top, right around the flower heads
+const wrapRadiusBottom = 0.22; // narrow gathered neck near the ribbon
+const wrapHeight = 2.3, wrapRadial = 96, wrapHeightSeg = 14, wrapPleats = 18;
 
 function pleatOffset(angle, radiusFrac){
   const fold = Math.sin(angle*wrapPleats);
   const sharp = Math.sign(fold) * Math.pow(Math.abs(fold), 0.55);
-  return sharp * 0.065 * wrapRadius * radiusFrac;
+  return sharp * 0.07 * wrapRadiusTop * radiusFrac;
 }
-function hemDroop(angle){
-  return Math.sin(angle*9 + 1.3)*0.05 + Math.sin(angle*23)*0.022 + Math.sin(angle*5-0.6)*0.03;
+function tornEdge(angle){
+  // irregular, torn-paper silhouette for the open top rim (not a clean circle)
+  return Math.sin(angle*9 + 1.3)*0.07 + Math.sin(angle*23)*0.03 + Math.sin(angle*5-0.6)*0.045 + Math.sin(angle*41)*0.018;
 }
 
-const wrapGeo = new THREE.ConeGeometry(wrapRadius, wrapHeight, wrapRadial, wrapHeightSeg, true);
+const wrapGeo = new THREE.CylinderGeometry(wrapRadiusTop, wrapRadiusBottom, wrapHeight, wrapRadial, wrapHeightSeg, true);
 {
   const pos = wrapGeo.attributes.position;
   for(let i=0;i<pos.count;i++){
     const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
     const angle = Math.atan2(z,x);
-    const heightFrac = THREE.MathUtils.clamp((y + wrapHeight/2)/wrapHeight, 0, 1); // 0=wide base,1=narrow apex
-    const radiusFrac = 1 - heightFrac;
+    const heightFrac = THREE.MathUtils.clamp((y + wrapHeight/2)/wrapHeight, 0, 1); // 0=narrow bottom neck, 1=wide open top
+    const radiusFrac = heightFrac; // pleats read stronger near the wide open top
     const currentRadius = Math.sqrt(x*x+z*z);
 
     const pleat = pleatOffset(angle, radiusFrac);
-    const crinkle = (Math.sin(angle*41 + y*6) * 0.009 + Math.sin(angle*17 - y*4) * 0.007) * radiusFrac;
+    const crinkle = (Math.sin(angle*41 + y*6) * 0.01 + Math.sin(angle*17 - y*4) * 0.008) * radiusFrac;
     const targetRadius = Math.max(0, currentRadius + pleat + crinkle);
     const s = currentRadius > 1e-5 ? targetRadius/currentRadius : 1;
     pos.setX(i, x*s);
     pos.setZ(i, z*s);
 
-    // ruffle only the bottom-most ring (the open hem) so it droops unevenly like real paper
-    if(heightFrac < 0.02){
-      pos.setY(i, y - Math.abs(hemDroop(angle))*wrapRadius*0.55);
+    // ruffle/tear only the top-most ring (the open rim where the flowers emerge)
+    if(heightFrac > 0.985){
+      pos.setY(i, y + Math.abs(tornEdge(angle))*wrapRadiusTop*0.6);
     }
   }
   wrapGeo.computeVertexNormals();
 }
 const wrap = new THREE.Mesh(wrapGeo, wrapMat);
-wrap.position.y = 0.9;
+wrap.position.y = 0.55;
 wrap.castShadow = true;
 wrap.receiveShadow = true;
 bouquet.add(wrap);
 
-// gold hem trim following the exact same ruffled/pleated bottom edge
+// gold trim tracing the exact same irregular torn top edge, right where the paper opens
 const hemPts = [];
 const hemSeg = 160;
 for(let i=0;i<=hemSeg;i++){
   const angle = (i/hemSeg)*Math.PI*2;
-  const r = wrapRadius + pleatOffset(angle, 1);
-  const y = -wrapHeight/2 - Math.abs(hemDroop(angle))*wrapRadius*0.55;
+  const r = wrapRadiusTop + pleatOffset(angle, 1);
+  const y = wrapHeight/2 + Math.abs(tornEdge(angle))*wrapRadiusTop*0.6;
   hemPts.push(new THREE.Vector3(Math.cos(angle)*r, y, Math.sin(angle)*r));
 }
 const hemCurve = new THREE.CatmullRomCurve3(hemPts, true);
-const hemGeo = new THREE.TubeGeometry(hemCurve, 200, 0.013, 8, true);
+const hemGeo = new THREE.TubeGeometry(hemCurve, 200, 0.015, 8, true);
 const hem = new THREE.Mesh(hemGeo, wrapEdgeMat);
 hem.position.y = wrap.position.y;
 hem.castShadow = true;
 bouquet.add(hem);
 
-// a slightly smaller inner liner cone (subtle warm tone) glimpsed through the pleat gaps for depth
-const linerGeo = new THREE.ConeGeometry(wrapRadius*0.94, wrapHeight*0.97, 64, 1, true);
+// a slightly smaller inner liner (subtle warm tone) glimpsed through the pleat gaps for depth
+const linerGeo = new THREE.CylinderGeometry(wrapRadiusTop*0.94, wrapRadiusBottom*0.94, wrapHeight*0.97, 64, 1, true);
 const linerMat = new THREE.MeshStandardMaterial({ color: 0x2a0c14, roughness: 0.6, side: THREE.BackSide });
 const liner = new THREE.Mesh(linerGeo, linerMat);
-liner.position.y = 0.9;
+liner.position.y = wrap.position.y;
 bouquet.add(liner);
 
-// fold flaps (a few angled planes around the top for the "petal wrap" look)
+// fold flaps (a few angled panels around the wide open top for the "petal wrap" look)
 const flapShape = new THREE.Shape();
 flapShape.moveTo(-0.55,0);
 flapShape.lineTo(0.55,0);
@@ -527,8 +532,8 @@ const flapCount = 8;
 for(let i=0;i<flapCount;i++){
   const flap = new THREE.Mesh(flapGeo, i%2===0 ? wrapMat : wrapMat.clone());
   const a = (i/flapCount)*Math.PI*2;
-  const radius = 1.05;
-  flap.position.set(Math.cos(a)*radius, 1.55, Math.sin(a)*radius);
+  const radius = 1.2;
+  flap.position.set(Math.cos(a)*radius, 1.6, Math.sin(a)*radius);
   flap.lookAt(new THREE.Vector3(Math.cos(a)*radius*2, 2.5, Math.sin(a)*radius*2));
   flap.rotateY(Math.PI);
   flap.scale.setScalar(0.85 + Math.random()*0.3);
@@ -558,7 +563,7 @@ function makeRibbonLoop(width=0.35, length=0.9, twist=0.5){
   return geo;
 }
 const bow = new THREE.Group();
-bow.position.set(0,1.05,1.05);
+bow.position.set(0,0.7,0.85);
 
 const loopGeo = makeRibbonLoop(0.32,0.85);
 [[-1,0.55],[1,0.55]].forEach(([dir,rot])=>{
@@ -723,12 +728,12 @@ for(let i=0;i<NEON_COUNT;i++){
    spike height react live to the music (bass drives the spike, mid drives the
    scroll speed) — same "pulse" feeling as a heart-rate monitor picking up a beat. */
 const ekgRadius = 1.9;
-const ekgHeight = 1.55;
+const ekgHeight = 0.95;
 const EKG_SEGMENTS = 160;     // points sampled around the loop
 const EKG_BEATS = 4;          // heartbeat pulses per full revolution
 const EKG_PEAK_PHASE = 0.33;  // where the QRS spike sits within one beat cycle (0..1)
-const ekgColor = 0xff3b6e;      // neon rose-red, matches the bouquet's palette
-const ekgGlowColor = 0xffb3c4;
+const ekgColor = 0xff0022;      // bright neon red
+const ekgGlowColor = 0xff5566;
 
 // classic ECG waveform shape (P wave - QRS complex - T wave) as a function of
 // phase (0..1) within one heartbeat cycle
@@ -781,6 +786,12 @@ for(let i=0;i<EKG_BEATS;i++){
   ekgDots.push(dot);
 }
 let ekgScroll = 0;
+
+// a red point light riding the ring, so its pulse actually washes red light
+// onto the bouquet above it in sync with the beat (not just a decorative line)
+const ekgLight = new THREE.PointLight(0xff0a26, 5, 7, 2);
+ekgLight.position.set(0, ekgHeight, 0);
+scene.add(ekgLight);
 
 /* ============ ENVIRONMENT MAP (for reflections/clearcoat) ============ */
 const pmrem = new THREE.PMREMGenerator(renderer);
@@ -928,6 +939,8 @@ function animate(){
     dot.scale.setScalar(1 + bass*1.1);
     dot.material.opacity = 0.7 + bass*0.3;
   });
+  // red light bathing the bouquet from below, pulsing with the same spike
+  ekgLight.intensity = 4 + Math.max(0, peakWave)*16 + bass*5;
 
   // flicker + audio-reactive pulse on the neon signs (the Water surface reflects them live)
   neonSprites.forEach(o => {
