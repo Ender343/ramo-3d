@@ -97,49 +97,163 @@ controls.enablePan = false;
 controls.autoRotate = true;
 controls.autoRotateSpeed = 1.1;
 
-/* ============ FLOOR (reflective marble, lighter tone) ============ */
-const floorGeo = new THREE.CircleGeometry(30, 96);
-const floorMat = new THREE.MeshStandardMaterial({
-  color: 0x241016, metalness: 0.55, roughness: 0.22,
-  envMapIntensity: 1.4
+/* ============ FLOOR — reflective water surface with rain ripples ============ */
+const floorGeo = new THREE.CircleGeometry(30, 128);
+const floorMat = new THREE.MeshPhysicalMaterial({
+  color: 0x090507, metalness: 0.05, roughness: 0.06,
+  envMapIntensity: 1.6, clearcoat: 1.0, clearcoatRoughness: 0.08,
+  reflectivity: 0.9
 });
 const floor = new THREE.Mesh(floorGeo, floorMat);
 floor.rotation.x = -Math.PI/2;
 floor.receiveShadow = true;
 scene.add(floor);
 
-// subtle floor grid streaks for marble veining
-const veinCanvas = document.createElement('canvas');
-veinCanvas.width = veinCanvas.height = 512;
-const vctx = veinCanvas.getContext('2d');
-vctx.fillStyle = '#241016'; vctx.fillRect(0,0,512,512);
-vctx.strokeStyle = 'rgba(200,60,80,0.28)'; vctx.lineWidth = 1.4;
-for(let i=0;i<40;i++){
-  vctx.beginPath();
-  let x = Math.random()*512, y=0;
-  vctx.moveTo(x,y);
-  for(let j=0;j<8;j++){ x += (Math.random()-0.5)*90; y += 64; vctx.lineTo(x,y); }
-  vctx.stroke();
+/* Ripple canvas: acts as the water's bump map. Instead of a static texture we
+   redraw it every frame — old ripples fade out (translucent black overlay) while
+   rain-impact points stamp in a fresh expanding ring — then push it to the GPU. */
+const RIPPLE_TEX_SIZE = 512;
+const RIPPLE_WORLD_RADIUS = 20; // world units mapped across the canvas
+const rippleCanvas = document.createElement('canvas');
+rippleCanvas.width = rippleCanvas.height = RIPPLE_TEX_SIZE;
+const rctx = rippleCanvas.getContext('2d');
+rctx.fillStyle = '#8080ff'; // neutral flat normal-ish grey (used as a bump map, mid-grey = no displacement)
+rctx.fillRect(0,0,RIPPLE_TEX_SIZE,RIPPLE_TEX_SIZE);
+const rippleTex = new THREE.CanvasTexture(rippleCanvas);
+floorMat.bumpMap = rippleTex;
+floorMat.bumpScale = 0.035;
+
+const activeRipples = []; // {x,y in canvas px, radius, maxRadius, alpha}
+function worldToCanvas(x, z){
+  return {
+    cx: (x / RIPPLE_WORLD_RADIUS) * (RIPPLE_TEX_SIZE/2) + RIPPLE_TEX_SIZE/2,
+    cy: (z / RIPPLE_WORLD_RADIUS) * (RIPPLE_TEX_SIZE/2) + RIPPLE_TEX_SIZE/2,
+  };
 }
-const veinTex = new THREE.CanvasTexture(veinCanvas);
-veinTex.wrapS = veinTex.wrapT = THREE.RepeatWrapping;
-veinTex.repeat.set(4,4);
-floorMat.roughnessMap = veinTex;
-floorMat.bumpMap = veinTex;
-floorMat.bumpScale = 0.02;
+function spawnRipple(worldX, worldZ){
+  const { cx, cy } = worldToCanvas(worldX, worldZ);
+  if(cx < -30 || cx > RIPPLE_TEX_SIZE+30 || cy < -30 || cy > RIPPLE_TEX_SIZE+30) return;
+  activeRipples.push({ x:cx, y:cy, radius:1, maxRadius: 18+Math.random()*14, alpha:0.55 });
+  if(activeRipples.length > 60) activeRipples.shift();
+}
+function updateRippleCanvas(){
+  // fade the whole canvas slowly back toward neutral grey (water settling)
+  rctx.fillStyle = 'rgba(128,128,255,0.06)';
+  rctx.fillRect(0,0,RIPPLE_TEX_SIZE,RIPPLE_TEX_SIZE);
+  for(let i=activeRipples.length-1;i>=0;i--){
+    const r = activeRipples[i];
+    r.radius += 0.9;
+    r.alpha *= 0.965;
+    if(r.radius > r.maxRadius || r.alpha < 0.01){ activeRipples.splice(i,1); continue; }
+    const grad = rctx.createRadialGradient(r.x,r.y,Math.max(0,r.radius-3), r.x,r.y,r.radius);
+    grad.addColorStop(0, `rgba(255,255,255,0)`);
+    grad.addColorStop(0.75, `rgba(180,200,255,${r.alpha})`);
+    grad.addColorStop(1, `rgba(80,80,150,0)`);
+    rctx.strokeStyle = grad;
+    rctx.lineWidth = 2.5;
+    rctx.beginPath();
+    rctx.arc(r.x, r.y, r.radius, 0, Math.PI*2);
+    rctx.stroke();
+  }
+  rippleTex.needsUpdate = true;
+}
+
+/* Falling rain drops: thin streaks that drop from above and spawn a ripple on impact */
+const rainGroup = new THREE.Group();
+scene.add(rainGroup);
+const rainMat = new THREE.MeshBasicMaterial({ color: 0xbfd4ff, transparent:true, opacity:0.55 });
+const rainGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.22, 4, 1);
+const RAIN_COUNT = 70;
+const rainDrops = [];
+for(let i=0;i<RAIN_COUNT;i++){
+  const drop = new THREE.Mesh(rainGeo, rainMat);
+  const radius = Math.random()*RIPPLE_WORLD_RADIUS*0.85;
+  const angle = Math.random()*Math.PI*2;
+  const speed = 9 + Math.random()*5;
+  drop.position.set(Math.cos(angle)*radius, Math.random()*14, Math.sin(angle)*radius);
+  rainGroup.add(drop);
+  rainDrops.push({ mesh: drop, speed, radius, angle });
+}
+function updateRain(dt){
+  rainDrops.forEach(rd => {
+    rd.mesh.position.y -= rd.speed * dt;
+    if(rd.mesh.position.y <= 0.02){
+      spawnRipple(rd.mesh.position.x, rd.mesh.position.z);
+      rd.radius = Math.random()*RIPPLE_WORLD_RADIUS*0.85;
+      rd.angle = Math.random()*Math.PI*2;
+      rd.mesh.position.set(Math.cos(rd.angle)*rd.radius, 10 + Math.random()*6, Math.sin(rd.angle)*rd.radius);
+    }
+  });
+  // the occasional ripple appears with no visible drop too, for extra ambience
+  if(Math.random() < 0.02){
+    const a = Math.random()*Math.PI*2, r = Math.random()*RIPPLE_WORLD_RADIUS*0.8;
+    spawnRipple(Math.cos(a)*r, Math.sin(a)*r);
+  }
+}
 
 /* ============ LIGHTING ============ */
 scene.add(new THREE.AmbientLight(0x3d1826, 0.85));
 scene.add(new THREE.HemisphereLight(0x4a2030, 0x150508, 0.6));
 
-const keyLight = new THREE.SpotLight(0xfff0e8, 55, 30, Math.PI/5, 0.4, 1.4);
-keyLight.position.set(4, 9, 5);
-keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(1024,1024);
-keyLight.shadow.bias = -0.001;
-scene.add(keyLight);
-scene.add(keyLight.target);
-keyLight.target.position.set(0,2.5,0);
+/* Two stage "reflectores" crossing onto the bouquet from front-left and front-right,
+   each with a faint visible beam cone (additive, gradient-alpha) for a theatrical look. */
+function makeSpotBeam(spot, color, length, coneAngle){
+  const radius = Math.tan(coneAngle) * length;
+  const beamGeo = new THREE.ConeGeometry(radius, length, 24, 1, true);
+  // fade the beam from bright at the light to transparent at the far end
+  const pos = beamGeo.attributes.position;
+  const alphas = new Float32Array(pos.count);
+  for(let i=0;i<pos.count;i++){
+    const y = pos.getY(i); // local cone: y=-length/2 is the wide base, y=+length/2 is the narrow apex
+    alphas[i] = THREE.MathUtils.clamp((y + length/2)/length, 0, 1); // 1 at apex (ends up at the light), 0 at the base (ends up at the target)
+  }
+  beamGeo.setAttribute('alpha', new THREE.BufferAttribute(alphas,1));
+  const beamMat = new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(color) } },
+    vertexShader: `
+      attribute float alpha;
+      varying float vAlpha;
+      void main(){
+        vAlpha = alpha;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor;
+      varying float vAlpha;
+      void main(){
+        gl_FragColor = vec4(uColor, vAlpha*0.16);
+      }`,
+    transparent:true, depthWrite:false, side:THREE.DoubleSide, blending: THREE.AdditiveBlending
+  });
+  const beam = new THREE.Mesh(beamGeo, beamMat);
+  return beam;
+}
+
+function makeSpotlightRig(color, position, targetPos, intensity, castsShadow){
+  const spot = new THREE.SpotLight(color, intensity, 26, Math.PI/7.5, 0.35, 1.6);
+  spot.position.copy(position);
+  scene.add(spot);
+  scene.add(spot.target);
+  spot.target.position.copy(targetPos);
+  if(castsShadow){
+    spot.castShadow = true;
+    spot.shadow.mapSize.set(1024,1024);
+    spot.shadow.bias = -0.001;
+  }
+  // visible beam cone, aimed the same way as the spotlight
+  const dir = new THREE.Vector3().subVectors(targetPos, position);
+  const length = dir.length();
+  const dirNorm = dir.clone().normalize();
+  const beam = makeSpotBeam(spot, color, length, Math.PI/7.5);
+  beam.position.copy(position).addScaledVector(dirNorm, length/2);
+  // cone apex (narrow, local +Y) sits at the light; the wide base (local -Y) opens out toward the target
+  beam.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dirNorm.clone().negate());
+  scene.add(beam);
+  return spot;
+}
+
+const spotLeft = makeSpotlightRig(0xfff2e0, new THREE.Vector3(-5, 8.5, 4.5), new THREE.Vector3(0,2.3,0), 60, true);
+const spotRight = makeSpotlightRig(0xffe6ea, new THREE.Vector3(5, 8, -3.5), new THREE.Vector3(0,2.3,0), 50, false);
 
 const pinkRim = new THREE.PointLight(0xff1744, 18, 20, 2);
 pinkRim.position.set(-5, 3, -4);
@@ -510,8 +624,11 @@ tag2.position.set(0.05,0.35,1.15);
 tag2.rotation.x = -0.3;
 bouquet.add(tag2);
 
-/* ============ PARALLAX NEON BACKGROUND ============ */
-/* Layers at different depths react to camera movement for a parallax feel. */
+/* ============ 360° NEON CYCLORAMA BACKGROUND ============ */
+/* A flat backdrop only covers the angle it faces — orbit the camera past it and
+   you hit black void. Instead we wrap a big cylinder all the way around the
+   scene (seen from its inside, BackSide) and scatter the neon signs at many
+   angles across two radii, so wherever the camera looks there is background. */
 const bgGroup = new THREE.Group();
 scene.add(bgGroup);
 
@@ -554,65 +671,59 @@ function makeNeonHeartTexture(color='#ff1744', w=256,h=256){
 
 const spriteMat = (tex) => new THREE.SpriteMaterial({ map: tex, transparent:true, depthWrite:false });
 
-const neonLayers = [
-  // far layer
-  { depth:-22, items:[
-      { tex: makeNeonTextTexture('Las mejores\ncosas florécen','#ff2d7a'), pos:[-8,4.2,0], scale:[6,3] },
-      { tex: makeNeonHeartTexture('#ff1744'), pos:[8.5,5.5,0], scale:[4,4] },
-    ]},
-  // mid layer
-  { depth:-14, items:[
-      { tex: makeNeonTextTexture('Amor\nSiempre','#ff3366'), pos:[9,2.2,0], scale:[4.5,2.5] },
-      { tex: makeNeonHeartTexture('#ff2d7a'), pos:[-9.5,0.8,0], scale:[3,3] },
-    ]},
-  // near-ish accent layer
-  { depth:-9, items:[
-      { tex: makeNeonHeartTexture('#ff0033'), pos:[6.5,-0.5,0], scale:[1.8,1.8] },
-      { tex: makeNeonHeartTexture('#ff0033'), pos:[-6,4.6,0], scale:[1.3,1.3] },
-    ]},
+// cyclorama wall: a big cylinder wrapping 360° around the scene, seen from inside.
+// Kept larger than the floor's radius (30) so the floor's outer edge never peeks
+// past the backdrop into black void, even at grazing/horizon camera angles.
+const cycloRadius = 34, cycloHeight = 42;
+const cycloCanvas = document.createElement('canvas');
+cycloCanvas.width = 8; cycloCanvas.height = 256;
+const cctx = cycloCanvas.getContext('2d');
+const cgrad = cctx.createLinearGradient(0,0,0,256);
+cgrad.addColorStop(0,'#3d1220');
+cgrad.addColorStop(0.45,'#2a0d16');
+cgrad.addColorStop(1,'#160709');
+cctx.fillStyle = cgrad; cctx.fillRect(0,0,8,256);
+const cycloTex = new THREE.CanvasTexture(cycloCanvas);
+const cycloGeo = new THREE.CylinderGeometry(cycloRadius, cycloRadius, cycloHeight, 48, 1, true);
+const cyclo = new THREE.Mesh(cycloGeo, new THREE.MeshBasicMaterial({ map: cycloTex, side: THREE.BackSide, fog:true }));
+cyclo.position.y = 6;
+bgGroup.add(cyclo);
+
+// neon signs scattered every ~30-40° around the full circle, alternating between two radii for depth
+const neonKinds = [
+  () => makeNeonTextTexture('Las mejores\ncosas florécen','#ff2d7a'),
+  () => makeNeonTextTexture('Amor\nSiempre','#ff3366'),
+  () => makeNeonHeartTexture('#ff1744'),
+  () => makeNeonHeartTexture('#ff2d7a'),
+  () => makeNeonHeartTexture('#ff0033'),
 ];
+const neonSprites = [];
+const NEON_COUNT = 12;
+for(let i=0;i<NEON_COUNT;i++){
+  const angle = (i/NEON_COUNT)*Math.PI*2 + (i%2===0 ? 0 : 0.16);
+  const nearLayer = i % 2 === 0;
+  const radius = nearLayer ? 15 : 20.5;
+  const tex = neonKinds[i % neonKinds.length]();
+  const isText = i % neonKinds.length < 2;
+  const scale = isText ? (nearLayer ? [4.6,2.3] : [6.2,3.1]) : (nearLayer ? [1.6,1.6] : [2.6,2.6]);
+  const sprite = new THREE.Sprite(spriteMat(tex));
+  const y = 2 + Math.sin(i*1.7)*2.2 + (nearLayer?0:1.2);
+  sprite.position.set(Math.cos(angle)*radius, y, Math.sin(angle)*radius);
+  sprite.scale.set(scale[0], scale[1], 1);
+  sprite.userData.baseScale = { x: scale[0], y: scale[1] };
+  sprite.userData.phase = i;
+  bgGroup.add(sprite);
+  neonSprites.push(sprite);
+}
 
-const parallaxLayers = [];
-neonLayers.forEach(layer => {
-  const holder = new THREE.Group();
-  holder.position.z = layer.depth;
-  layer.items.forEach(it => {
-    const sprite = new THREE.Sprite(spriteMat(it.tex));
-    sprite.position.set(it.pos[0], it.pos[1], it.pos[2]);
-    sprite.scale.set(it.scale[0], it.scale[1], 1);
-    sprite.userData.baseScale = { x: it.scale[0], y: it.scale[1] };
-    holder.add(sprite);
-  });
-  bgGroup.add(holder);
-  parallaxLayers.push({ group: holder, depth: layer.depth, factor: THREE.MathUtils.clamp(1 - Math.abs(layer.depth)/24, 0.15, 0.9) });
-});
-
-// backdrop panel (subtle vertical gradient wall) behind everything, also parallaxes a little
-const backWallGeo = new THREE.PlaneGeometry(60,30);
-const backWallCanvas = document.createElement('canvas');
-backWallCanvas.width=64; backWallCanvas.height=64;
-const bwctx = backWallCanvas.getContext('2d');
-const grad = bwctx.createLinearGradient(0,0,0,64);
-grad.addColorStop(0,'#3d1220');
-grad.addColorStop(0.5,'#2a0d16');
-grad.addColorStop(1,'#1c0810');
-bwctx.fillStyle = grad; bwctx.fillRect(0,0,64,64);
-const backWallTex = new THREE.CanvasTexture(backWallCanvas);
-const backWall = new THREE.Mesh(backWallGeo, new THREE.MeshBasicMaterial({ map: backWallTex }));
-backWall.position.set(0,5,-26);
-bgGroup.add(backWall);
-parallaxLayers.push({ group: backWall, depth: -26, factor: 0.08 });
-
-// floor reflections of neon (colored point lights already do some of this via pinkRim/magentaRim)
-
-/* mirrored floor text hint using a duplicated, flipped sprite group for "reflection" look */
+/* mirrored floor reflection of the neon signs (duplicated, flipped, faded) */
 const reflectGroup = new THREE.Group();
 reflectGroup.scale.y = -1;
 reflectGroup.position.y = -0.02;
-neonLayers.forEach((layer, li) => {
-  const holder = parallaxLayers[li].group;
-  const mirror = holder.clone();
-  mirror.traverse(o => { if(o.material){ o.material = o.material.clone(); o.material.opacity = 0.18; } });
+neonSprites.forEach(sprite => {
+  const mirror = sprite.clone();
+  mirror.material = sprite.material.clone();
+  mirror.material.opacity = 0.16;
   reflectGroup.add(mirror);
 });
 scene.add(reflectGroup);
@@ -652,26 +763,52 @@ function initAudioGraph(){
   analyser.connect(audioCtx.destination);
 }
 
-btnMusic.addEventListener('click', async () => {
+function markPlaying(){
+  musicPlaying = true;
+  btnMusic.textContent = '🔇 Silenciar';
+  btnMusic.classList.add('active');
+}
+function markStopped(){
+  musicPlaying = false;
+  btnMusic.textContent = '🎵 Reproducir música';
+  btnMusic.classList.remove('active');
+}
+
+async function tryStartMusic(){
+  if(musicPlaying) return true;
   try{
     initAudioGraph();
     if(audioCtx.state === 'suspended') await audioCtx.resume();
-    if(musicPlaying){
-      bgMusic.pause();
-      musicPlaying = false;
-      btnMusic.textContent = '🎵 Reproducir música';
-      btnMusic.classList.remove('active');
-    } else {
-      await bgMusic.play(); // el atributo loop en <audio> lo repite indefinidamente hasta cerrar la pestaña
-      musicPlaying = true;
-      btnMusic.textContent = '🔇 Silenciar';
-      btnMusic.classList.add('active');
-    }
+    await bgMusic.play(); // el atributo loop en <audio> lo repite indefinidamente hasta cerrar la pestaña
+    markPlaying();
+    return true;
   } catch(err){
-    console.warn('No se pudo reproducir el audio:', err);
-    btnMusic.textContent = '⚠ Agrega song.mp3';
+    return false; // bloqueado por la política de autoplay del navegador, o falta song.mp3
   }
+}
+
+btnMusic.addEventListener('click', async () => {
+  if(musicPlaying){
+    bgMusic.pause();
+    markStopped();
+    return;
+  }
+  const ok = await tryStartMusic();
+  if(!ok) btnMusic.textContent = '⚠ Agrega song.mp3';
 });
+
+// Reproducción automática: se intenta apenas carga la página. Si el navegador la
+// bloquea (política estándar de autoplay con sonido), arranca sola en cuanto la
+// persona haga el primer clic/toque/tecla en cualquier parte de la página —
+// sin necesidad de pulsar el botón de música.
+tryStartMusic();
+const autoplayGate = async () => {
+  const ok = await tryStartMusic();
+  if(ok){
+    ['pointerdown','keydown','touchstart'].forEach(evt => window.removeEventListener(evt, autoplayGate));
+  }
+};
+['pointerdown','keydown','touchstart'].forEach(evt => window.addEventListener(evt, autoplayGate, { passive:true }));
 
 // audio levels read each frame by the render loop (bass/mid/treble, 0..1)
 const audioLevel = { bass:0, mid:0, treble:0 };
@@ -717,29 +854,32 @@ function animate(){
   updateAudioLevels();
   const { bass, mid, treble } = audioLevel;
 
-  // PARALLAX: shift each background layer opposite-ish to camera azimuth, scaled by depth factor
-  const camAngle = Math.atan2(camera.position.x, camera.position.z);
-  parallaxLayers.forEach(pl => {
-    pl.group.position.x = -Math.sin(camAngle) * 6 * pl.factor;
-    pl.group.position.y = 5 + Math.cos(t*0.15 + pl.depth) * 0.15 * pl.factor + (camera.position.y-3.6)*0.15*pl.factor;
-  });
+  // rain + water ripples (the 360° background needs no manual parallax shift —
+  // the neon signs are placed in real 3D around the scene, so orbiting the
+  // camera already gives natural perspective parallax against the far cyclorama)
+  updateRain(Math.min(dt, 0.05));
+  updateRippleCanvas();
 
-  // flicker + audio-reactive pulse on neon sprites
-  bgGroup.traverse(o => {
-    if(o.isSprite){
-      o.material.opacity = 0.85 + Math.sin(t*6 + o.position.x)*0.08 + (Math.random()<0.003 ? -0.3:0) + treble*0.15;
-      const base = o.userData.baseScale;
-      if(base){
-        const pulse = 1 + bass*0.22 + mid*0.08;
-        o.scale.set(base.x*pulse, base.y*pulse, 1);
-      }
-    }
+  // flicker + audio-reactive pulse on the neon signs (and their floor reflections)
+  neonSprites.forEach(o => {
+    o.material.opacity = 0.85 + Math.sin(t*6 + o.userData.phase)*0.08 + (Math.random()<0.003 ? -0.3:0) + treble*0.15;
+    const base = o.userData.baseScale;
+    const pulse = 1 + bass*0.22 + mid*0.08;
+    o.scale.set(base.x*pulse, base.y*pulse, 1);
+  });
+  reflectGroup.children.forEach((mirror, i) => {
+    const src = neonSprites[i];
+    if(!src) return;
+    mirror.material.opacity = src.material.opacity * 0.19;
+    mirror.scale.copy(src.scale);
   });
 
   // light shimmer, boosted by the music's bass/mid/treble bands when playing (idle = just the sine shimmer)
   pinkRim.intensity = (16 + Math.sin(t*1.3)*3) * (1 + bass*1.8);
   magentaRim.intensity = (12 + Math.cos(t*1.7)*3) * (1 + mid*1.6);
   heartLight.intensity = (9 + Math.sin(t*2.1)*2) * (1 + treble*1.5);
+  spotLeft.intensity = (60 + Math.sin(t*0.9)*4) * (1 + bass*0.6);
+  spotRight.intensity = (50 + Math.cos(t*1.1)*4) * (1 + mid*0.5);
   renderer.toneMappingExposure = 1.15 + treble*0.12 + bass*0.08;
 
   renderer.render(scene, camera);
