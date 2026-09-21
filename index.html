@@ -63,6 +63,7 @@
 <script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { Water } from "three/addons/objects/Water.js";
 
 /* ---------------------------------------------------------
    RAMO DE ROSAS 3D — cámara orbital + fondo con parallax
@@ -97,98 +98,93 @@ controls.enablePan = false;
 controls.autoRotate = true;
 controls.autoRotateSpeed = 1.1;
 
-/* ============ FLOOR — reflective water surface with rain ripples ============ */
-const floorGeo = new THREE.CircleGeometry(30, 128);
-const floorMat = new THREE.MeshPhysicalMaterial({
-  color: 0x090507, metalness: 0.05, roughness: 0.06,
-  envMapIntensity: 1.6, clearcoat: 1.0, clearcoatRoughness: 0.08,
-  reflectivity: 0.9
+/* ============ FLOOR — real reflective water (Three.js Water) + rain ============ */
+/* The earlier version faked reflections with a mirrored, flipped copy of the neon
+   sprites sitting *under* an opaque floor — which hid them completely (the floor,
+   being solid, blocked the very thing it was supposed to show). Three.js's own
+   Water object does this properly: it renders a live mirror texture of the scene
+   plus an animated, sunlit ripple normal-map, so it actually reads as water. */
+const WATER_RADIUS = 22; // world units the rain/splashes are allowed to land within
+const waterGeo = new THREE.PlaneGeometry(70, 70);
+const waterNormals = new THREE.TextureLoader().load(
+  'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/textures/waternormals.jpg',
+  tex => { tex.wrapS = tex.wrapT = THREE.RepeatWrapping; }
+);
+const water = new Water(waterGeo, {
+  textureWidth: 512,
+  textureHeight: 512,
+  waterNormals,
+  sunDirection: new THREE.Vector3(0.25, 0.6, 0.35),
+  sunColor: 0xffe6d5,
+  waterColor: 0x220a12,
+  distortionScale: 2.0,
+  fog: scene.fog !== undefined,
 });
-const floor = new THREE.Mesh(floorGeo, floorMat);
-floor.rotation.x = -Math.PI/2;
-floor.receiveShadow = true;
-scene.add(floor);
+water.material.uniforms['alpha'].value = 0.97;
+water.rotation.x = -Math.PI/2;
+scene.add(water);
 
-/* Ripple canvas: acts as the water's bump map. Instead of a static texture we
-   redraw it every frame — old ripples fade out (translucent black overlay) while
-   rain-impact points stamp in a fresh expanding ring — then push it to the GPU. */
-const RIPPLE_TEX_SIZE = 512;
-const RIPPLE_WORLD_RADIUS = 20; // world units mapped across the canvas
-const rippleCanvas = document.createElement('canvas');
-rippleCanvas.width = rippleCanvas.height = RIPPLE_TEX_SIZE;
-const rctx = rippleCanvas.getContext('2d');
-rctx.fillStyle = '#8080ff'; // neutral flat normal-ish grey (used as a bump map, mid-grey = no displacement)
-rctx.fillRect(0,0,RIPPLE_TEX_SIZE,RIPPLE_TEX_SIZE);
-const rippleTex = new THREE.CanvasTexture(rippleCanvas);
-floorMat.bumpMap = rippleTex;
-floorMat.bumpScale = 0.035;
-
-const activeRipples = []; // {x,y in canvas px, radius, maxRadius, alpha}
-function worldToCanvas(x, z){
-  return {
-    cx: (x / RIPPLE_WORLD_RADIUS) * (RIPPLE_TEX_SIZE/2) + RIPPLE_TEX_SIZE/2,
-    cy: (z / RIPPLE_WORLD_RADIUS) * (RIPPLE_TEX_SIZE/2) + RIPPLE_TEX_SIZE/2,
-  };
-}
-function spawnRipple(worldX, worldZ){
-  const { cx, cy } = worldToCanvas(worldX, worldZ);
-  if(cx < -30 || cx > RIPPLE_TEX_SIZE+30 || cy < -30 || cy > RIPPLE_TEX_SIZE+30) return;
-  activeRipples.push({ x:cx, y:cy, radius:1, maxRadius: 18+Math.random()*14, alpha:0.55 });
-  if(activeRipples.length > 60) activeRipples.shift();
-}
-function updateRippleCanvas(){
-  // fade the whole canvas slowly back toward neutral grey (water settling)
-  rctx.fillStyle = 'rgba(128,128,255,0.06)';
-  rctx.fillRect(0,0,RIPPLE_TEX_SIZE,RIPPLE_TEX_SIZE);
-  for(let i=activeRipples.length-1;i>=0;i--){
-    const r = activeRipples[i];
-    r.radius += 0.9;
-    r.alpha *= 0.965;
-    if(r.radius > r.maxRadius || r.alpha < 0.01){ activeRipples.splice(i,1); continue; }
-    const grad = rctx.createRadialGradient(r.x,r.y,Math.max(0,r.radius-3), r.x,r.y,r.radius);
-    grad.addColorStop(0, `rgba(255,255,255,0)`);
-    grad.addColorStop(0.75, `rgba(180,200,255,${r.alpha})`);
-    grad.addColorStop(1, `rgba(80,80,150,0)`);
-    rctx.strokeStyle = grad;
-    rctx.lineWidth = 2.5;
-    rctx.beginPath();
-    rctx.arc(r.x, r.y, r.radius, 0, Math.PI*2);
-    rctx.stroke();
-  }
-  rippleTex.needsUpdate = true;
-}
-
-/* Falling rain drops: thin streaks that drop from above and spawn a ripple on impact */
+/* Falling rain drops that spawn a real expanding ring "splash" mesh on impact
+   (a pooled set of rings, additive-blended, growing + fading — recycled rather
+   than recreated so this stays cheap at 60fps). */
 const rainGroup = new THREE.Group();
 scene.add(rainGroup);
-const rainMat = new THREE.MeshBasicMaterial({ color: 0xbfd4ff, transparent:true, opacity:0.55 });
-const rainGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.22, 4, 1);
-const RAIN_COUNT = 70;
+const rainMat = new THREE.MeshBasicMaterial({ color: 0xdfeaff, transparent:true, opacity:0.7 });
+const rainGeo = new THREE.CylinderGeometry(0.006, 0.006, 0.32, 4, 1);
+const RAIN_COUNT = 90;
 const rainDrops = [];
 for(let i=0;i<RAIN_COUNT;i++){
   const drop = new THREE.Mesh(rainGeo, rainMat);
-  const radius = Math.random()*RIPPLE_WORLD_RADIUS*0.85;
+  const radius = Math.random()*WATER_RADIUS*0.85;
   const angle = Math.random()*Math.PI*2;
-  const speed = 9 + Math.random()*5;
+  const speed = 10 + Math.random()*6;
   drop.position.set(Math.cos(angle)*radius, Math.random()*14, Math.sin(angle)*radius);
   rainGroup.add(drop);
   rainDrops.push({ mesh: drop, speed, radius, angle });
+}
+
+const SPLASH_POOL_SIZE = 30;
+const splashGeo = new THREE.RingGeometry(0.05, 0.085, 24);
+const splashPool = [];
+for(let i=0;i<SPLASH_POOL_SIZE;i++){
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xcfe4ff, transparent:true, opacity:0, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending, depthWrite:false
+  });
+  const mesh = new THREE.Mesh(splashGeo, mat);
+  mesh.rotation.x = -Math.PI/2;
+  mesh.visible = false;
+  scene.add(mesh);
+  splashPool.push({ mesh, life:0, active:false });
+}
+function spawnSplash(x, z){
+  const s = splashPool.find(s => !s.active) || splashPool[0];
+  s.active = true; s.life = 0;
+  s.mesh.position.set(x, 0.02, z);
+  s.mesh.scale.setScalar(1);
+  s.mesh.material.opacity = 0.55;
+  s.mesh.visible = true;
+}
+function updateSplashes(dt){
+  splashPool.forEach(s => {
+    if(!s.active) return;
+    s.life += dt;
+    const k = s.life/0.9;
+    if(k >= 1){ s.active=false; s.mesh.visible=false; return; }
+    s.mesh.scale.setScalar(1 + k*16);
+    s.mesh.material.opacity = 0.55*(1-k);
+  });
 }
 function updateRain(dt){
   rainDrops.forEach(rd => {
     rd.mesh.position.y -= rd.speed * dt;
     if(rd.mesh.position.y <= 0.02){
-      spawnRipple(rd.mesh.position.x, rd.mesh.position.z);
-      rd.radius = Math.random()*RIPPLE_WORLD_RADIUS*0.85;
+      spawnSplash(rd.mesh.position.x, rd.mesh.position.z);
+      rd.radius = Math.random()*WATER_RADIUS*0.85;
       rd.angle = Math.random()*Math.PI*2;
       rd.mesh.position.set(Math.cos(rd.angle)*rd.radius, 10 + Math.random()*6, Math.sin(rd.angle)*rd.radius);
     }
   });
-  // the occasional ripple appears with no visible drop too, for extra ambience
-  if(Math.random() < 0.02){
-    const a = Math.random()*Math.PI*2, r = Math.random()*RIPPLE_WORLD_RADIUS*0.8;
-    spawnRipple(Math.cos(a)*r, Math.sin(a)*r);
-  }
 }
 
 /* ============ LIGHTING ============ */
@@ -671,22 +667,22 @@ function makeNeonHeartTexture(color='#ff1744', w=256,h=256){
 
 const spriteMat = (tex) => new THREE.SpriteMaterial({ map: tex, transparent:true, depthWrite:false });
 
-// cyclorama wall: a big cylinder wrapping 360° around the scene, seen from inside.
-// Kept larger than the floor's radius (30) so the floor's outer edge never peeks
-// past the backdrop into black void, even at grazing/horizon camera angles.
-const cycloRadius = 34, cycloHeight = 42;
+// cyclorama sky-dome: a fully CLOSED sphere wrapping the entire scene, seen from
+// inside (BackSide). Unlike a cylinder, a sphere has no open rim/top edge that can
+// peek into black void — wherever the camera looks, it's sphere interior, period.
+const cycloRadius = 46;
 const cycloCanvas = document.createElement('canvas');
 cycloCanvas.width = 8; cycloCanvas.height = 256;
 const cctx = cycloCanvas.getContext('2d');
 const cgrad = cctx.createLinearGradient(0,0,0,256);
-cgrad.addColorStop(0,'#3d1220');
-cgrad.addColorStop(0.45,'#2a0d16');
-cgrad.addColorStop(1,'#160709');
+cgrad.addColorStop(0, '#4a1826');   // v=0 → sphere top (sky) — lightest
+cgrad.addColorStop(0.45, '#2a0d16');
+cgrad.addColorStop(1, '#150609');   // v=1 → sphere bottom (ground) — darkest
 cctx.fillStyle = cgrad; cctx.fillRect(0,0,8,256);
 const cycloTex = new THREE.CanvasTexture(cycloCanvas);
-const cycloGeo = new THREE.CylinderGeometry(cycloRadius, cycloRadius, cycloHeight, 48, 1, true);
+const cycloGeo = new THREE.SphereGeometry(cycloRadius, 48, 32);
 const cyclo = new THREE.Mesh(cycloGeo, new THREE.MeshBasicMaterial({ map: cycloTex, side: THREE.BackSide, fog:true }));
-cyclo.position.y = 6;
+cyclo.position.y = 2.6; // roughly the camera's orbit-target height, so the gradient centers on eye level
 bgGroup.add(cyclo);
 
 // neon signs scattered every ~30-40° around the full circle, alternating between two radii for depth
@@ -716,17 +712,9 @@ for(let i=0;i<NEON_COUNT;i++){
   neonSprites.push(sprite);
 }
 
-/* mirrored floor reflection of the neon signs (duplicated, flipped, faded) */
-const reflectGroup = new THREE.Group();
-reflectGroup.scale.y = -1;
-reflectGroup.position.y = -0.02;
-neonSprites.forEach(sprite => {
-  const mirror = sprite.clone();
-  mirror.material = sprite.material.clone();
-  mirror.material.opacity = 0.16;
-  reflectGroup.add(mirror);
-});
-scene.add(reflectGroup);
+/* Reflections of the neon signs on the floor now come from the real Water
+   object above (it renders an actual mirror pass of the scene), so no manual
+   mirrored-sprite trick is needed here anymore. */
 
 /* ============ ENVIRONMENT MAP (for reflections/clearcoat) ============ */
 const pmrem = new THREE.PMREMGenerator(renderer);
@@ -854,24 +842,20 @@ function animate(){
   updateAudioLevels();
   const { bass, mid, treble } = audioLevel;
 
-  // rain + water ripples (the 360° background needs no manual parallax shift —
-  // the neon signs are placed in real 3D around the scene, so orbiting the
-  // camera already gives natural perspective parallax against the far cyclorama)
+  // animated water surface (real ripple/wave shader) + falling rain + splash rings
+  // (the 360° sky-dome needs no manual parallax shift — the neon signs are placed
+  // in real 3D around the scene, so orbiting the camera already gives natural
+  // perspective parallax against the far background)
+  water.material.uniforms['time'].value += dt;
   updateRain(Math.min(dt, 0.05));
-  updateRippleCanvas();
+  updateSplashes(dt);
 
-  // flicker + audio-reactive pulse on the neon signs (and their floor reflections)
+  // flicker + audio-reactive pulse on the neon signs (the Water surface reflects them live)
   neonSprites.forEach(o => {
     o.material.opacity = 0.85 + Math.sin(t*6 + o.userData.phase)*0.08 + (Math.random()<0.003 ? -0.3:0) + treble*0.15;
     const base = o.userData.baseScale;
     const pulse = 1 + bass*0.22 + mid*0.08;
     o.scale.set(base.x*pulse, base.y*pulse, 1);
-  });
-  reflectGroup.children.forEach((mirror, i) => {
-    const src = neonSprites[i];
-    if(!src) return;
-    mirror.material.opacity = src.material.opacity * 0.19;
-    mirror.scale.copy(src.scale);
   });
 
   // light shimmer, boosted by the music's bass/mid/treble bands when playing (idle = just the sine shimmer)
