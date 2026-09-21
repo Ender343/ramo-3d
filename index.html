@@ -445,10 +445,82 @@ roseHeadPositions.forEach(([x,y,z,scale], idx) => {
   }
 });
 
-/* ============ WRAPPING PAPER — removed per request ============ */
-/* The black paper cone was cut entirely (it kept reading as an odd extra shape
-   around the stems). The bouquet is now just the stems gathered by the ribbon
-   bow below, with the gold-trim tags still attached — cleaner silhouette. */
+/* ============ WRAPPING PAPER (pleated paper cone, high-detail) ============ */
+/* Real bouquet wrap opens WIDE at the top (around the flower heads) and gathers
+   to a narrow neck at the bottom (where the ribbon ties it) — a truncated cone
+   (frustum), not a cone tapering to a point. It's built as a dense cylinder mesh
+   folded with sharp radial pleats (like a gathered paper skirt), fine crinkle
+   noise for surface irregularity, and an irregular torn/ruffled edge at the open
+   TOP rim instead of a perfect circle — with a gold tube tracing that same torn
+   top edge, right where the paper opens around the flowers.
+   (Note: the separate upper "fold flap" panels that used to sit above this were
+   removed per request — this single wrap cone is the one that was fine.) */
+const wrapRadiusTop = 1.5;     // wide open top, right around the flower heads
+const wrapRadiusBottom = 0.22; // narrow gathered neck near the ribbon
+const wrapHeight = 2.3, wrapRadial = 96, wrapHeightSeg = 14, wrapPleats = 18;
+
+function pleatOffset(angle, radiusFrac){
+  const fold = Math.sin(angle*wrapPleats);
+  const sharp = Math.sign(fold) * Math.pow(Math.abs(fold), 0.55);
+  return sharp * 0.07 * wrapRadiusTop * radiusFrac;
+}
+function tornEdge(angle){
+  // irregular, torn-paper silhouette for the open top rim (not a clean circle)
+  return Math.sin(angle*9 + 1.3)*0.07 + Math.sin(angle*23)*0.03 + Math.sin(angle*5-0.6)*0.045 + Math.sin(angle*41)*0.018;
+}
+
+const wrapGeo = new THREE.CylinderGeometry(wrapRadiusTop, wrapRadiusBottom, wrapHeight, wrapRadial, wrapHeightSeg, true);
+{
+  const pos = wrapGeo.attributes.position;
+  for(let i=0;i<pos.count;i++){
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const angle = Math.atan2(z,x);
+    const heightFrac = THREE.MathUtils.clamp((y + wrapHeight/2)/wrapHeight, 0, 1); // 0=narrow bottom neck, 1=wide open top
+    const radiusFrac = heightFrac; // pleats read stronger near the wide open top
+    const currentRadius = Math.sqrt(x*x+z*z);
+
+    const pleat = pleatOffset(angle, radiusFrac);
+    const crinkle = (Math.sin(angle*41 + y*6) * 0.01 + Math.sin(angle*17 - y*4) * 0.008) * radiusFrac;
+    const targetRadius = Math.max(0, currentRadius + pleat + crinkle);
+    const s = currentRadius > 1e-5 ? targetRadius/currentRadius : 1;
+    pos.setX(i, x*s);
+    pos.setZ(i, z*s);
+
+    // ruffle/tear only the top-most ring (the open rim where the flowers emerge)
+    if(heightFrac > 0.985){
+      pos.setY(i, y + Math.abs(tornEdge(angle))*wrapRadiusTop*0.6);
+    }
+  }
+  wrapGeo.computeVertexNormals();
+}
+const wrap = new THREE.Mesh(wrapGeo, wrapMat);
+wrap.position.y = 0.55;
+wrap.castShadow = true;
+wrap.receiveShadow = true;
+bouquet.add(wrap);
+
+// gold trim tracing the exact same irregular torn top edge, right where the paper opens
+const hemPts = [];
+const hemSeg = 160;
+for(let i=0;i<=hemSeg;i++){
+  const angle = (i/hemSeg)*Math.PI*2;
+  const r = wrapRadiusTop + pleatOffset(angle, 1);
+  const y = wrapHeight/2 + Math.abs(tornEdge(angle))*wrapRadiusTop*0.6;
+  hemPts.push(new THREE.Vector3(Math.cos(angle)*r, y, Math.sin(angle)*r));
+}
+const hemCurve = new THREE.CatmullRomCurve3(hemPts, true);
+const hemGeo = new THREE.TubeGeometry(hemCurve, 200, 0.015, 8, true);
+const hem = new THREE.Mesh(hemGeo, wrapEdgeMat);
+hem.position.y = wrap.position.y;
+hem.castShadow = true;
+bouquet.add(hem);
+
+// a slightly smaller inner liner (subtle warm tone) glimpsed through the pleat gaps for depth
+const linerGeo = new THREE.CylinderGeometry(wrapRadiusTop*0.94, wrapRadiusBottom*0.94, wrapHeight*0.97, 64, 1, true);
+const linerMat = new THREE.MeshStandardMaterial({ color: 0x2a0c14, roughness: 0.6, side: THREE.BackSide });
+const liner = new THREE.Mesh(linerGeo, linerMat);
+liner.position.y = wrap.position.y;
+bouquet.add(liner);
 
 /* ============ RIBBON BOW ============ */
 function makeRibbonLoop(width=0.35, length=0.9, twist=0.5){
