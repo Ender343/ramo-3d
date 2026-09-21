@@ -334,13 +334,75 @@ roseHeadPositions.forEach(([x,y,z,scale], idx) => {
   }
 });
 
-/* ============ WRAPPING PAPER (cone, black + gold edge) ============ */
-const wrapGeo = new THREE.ConeGeometry(1.35, 2.6, 48, 1, true);
+/* ============ WRAPPING PAPER (pleated paper cone, high-detail) ============ */
+/* A plain ConeGeometry reads as a mathematical shape, not paper — so we take a
+   dense cone mesh and fold it: sharp radial pleats (like a gathered paper skirt),
+   fine crinkle noise for surface irregularity, and an uneven ruffled hem at the
+   wide bottom edge instead of a perfect circle. A gold tube traces that same
+   ruffled hem to match the wrap's trim. */
+const wrapRadius = 1.35, wrapHeight = 2.6, wrapRadial = 96, wrapHeightSeg = 14, wrapPleats = 18;
+
+function pleatOffset(angle, radiusFrac){
+  const fold = Math.sin(angle*wrapPleats);
+  const sharp = Math.sign(fold) * Math.pow(Math.abs(fold), 0.55);
+  return sharp * 0.065 * wrapRadius * radiusFrac;
+}
+function hemDroop(angle){
+  return Math.sin(angle*9 + 1.3)*0.05 + Math.sin(angle*23)*0.022 + Math.sin(angle*5-0.6)*0.03;
+}
+
+const wrapGeo = new THREE.ConeGeometry(wrapRadius, wrapHeight, wrapRadial, wrapHeightSeg, true);
+{
+  const pos = wrapGeo.attributes.position;
+  for(let i=0;i<pos.count;i++){
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const angle = Math.atan2(z,x);
+    const heightFrac = THREE.MathUtils.clamp((y + wrapHeight/2)/wrapHeight, 0, 1); // 0=wide base,1=narrow apex
+    const radiusFrac = 1 - heightFrac;
+    const currentRadius = Math.sqrt(x*x+z*z);
+
+    const pleat = pleatOffset(angle, radiusFrac);
+    const crinkle = (Math.sin(angle*41 + y*6) * 0.009 + Math.sin(angle*17 - y*4) * 0.007) * radiusFrac;
+    const targetRadius = Math.max(0, currentRadius + pleat + crinkle);
+    const s = currentRadius > 1e-5 ? targetRadius/currentRadius : 1;
+    pos.setX(i, x*s);
+    pos.setZ(i, z*s);
+
+    // ruffle only the bottom-most ring (the open hem) so it droops unevenly like real paper
+    if(heightFrac < 0.02){
+      pos.setY(i, y - Math.abs(hemDroop(angle))*wrapRadius*0.55);
+    }
+  }
+  wrapGeo.computeVertexNormals();
+}
 const wrap = new THREE.Mesh(wrapGeo, wrapMat);
 wrap.position.y = 0.9;
 wrap.castShadow = true;
 wrap.receiveShadow = true;
 bouquet.add(wrap);
+
+// gold hem trim following the exact same ruffled/pleated bottom edge
+const hemPts = [];
+const hemSeg = 160;
+for(let i=0;i<=hemSeg;i++){
+  const angle = (i/hemSeg)*Math.PI*2;
+  const r = wrapRadius + pleatOffset(angle, 1);
+  const y = -wrapHeight/2 - Math.abs(hemDroop(angle))*wrapRadius*0.55;
+  hemPts.push(new THREE.Vector3(Math.cos(angle)*r, y, Math.sin(angle)*r));
+}
+const hemCurve = new THREE.CatmullRomCurve3(hemPts, true);
+const hemGeo = new THREE.TubeGeometry(hemCurve, 200, 0.013, 8, true);
+const hem = new THREE.Mesh(hemGeo, wrapEdgeMat);
+hem.position.y = wrap.position.y;
+hem.castShadow = true;
+bouquet.add(hem);
+
+// a slightly smaller inner liner cone (subtle warm tone) glimpsed through the pleat gaps for depth
+const linerGeo = new THREE.ConeGeometry(wrapRadius*0.94, wrapHeight*0.97, 64, 1, true);
+const linerMat = new THREE.MeshStandardMaterial({ color: 0x2a0c14, roughness: 0.6, side: THREE.BackSide });
+const liner = new THREE.Mesh(linerGeo, linerMat);
+liner.position.y = 0.9;
+bouquet.add(liner);
 
 // fold flaps (a few angled planes around the top for the "petal wrap" look)
 const flapShape = new THREE.Shape();
