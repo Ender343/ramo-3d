@@ -716,6 +716,72 @@ for(let i=0;i<NEON_COUNT;i++){
    object above (it renders an actual mirror pass of the scene), so no manual
    mirrored-sprite trick is needed here anymore. */
 
+/* ============ EKG / HEART-MONITOR RING AROUND THE BOUQUET ============ */
+/* A glowing ring that circles the bouquet at chest height, carrying a classic
+   hospital-monitor heartbeat trace (P bump, sharp QRS spike, T bump) instead of
+   a flat line. The trace continuously scrolls around the ring, and its speed +
+   spike height react live to the music (bass drives the spike, mid drives the
+   scroll speed) — same "pulse" feeling as a heart-rate monitor picking up a beat. */
+const ekgRadius = 1.9;
+const ekgHeight = 1.55;
+const EKG_SEGMENTS = 160;     // points sampled around the loop
+const EKG_BEATS = 4;          // heartbeat pulses per full revolution
+const EKG_PEAK_PHASE = 0.33;  // where the QRS spike sits within one beat cycle (0..1)
+const ekgColor = 0xff3b6e;      // neon rose-red, matches the bouquet's palette
+const ekgGlowColor = 0xffb3c4;
+
+// classic ECG waveform shape (P wave - QRS complex - T wave) as a function of
+// phase (0..1) within one heartbeat cycle
+function ekgWave(phase){
+  let v = 0;
+  v += Math.exp(-Math.pow((phase-0.12)*40,2)) * 0.10;                       // P wave
+  v += Math.exp(-Math.pow((phase-EKG_PEAK_PHASE+0.03)*160,2)) * -0.10;      // Q dip
+  v += Math.exp(-Math.pow((phase-EKG_PEAK_PHASE)*220,2)) * 1.0;             // R spike
+  v += Math.exp(-Math.pow((phase-EKG_PEAK_PHASE-0.035)*160,2)) * -0.28;     // S dip
+  v += Math.exp(-Math.pow((phase-0.55)*30,2)) * 0.22;                       // T wave
+  return v;
+}
+
+function buildEkgPoints(scrollOffset, amp){
+  const pts = [];
+  for(let i=0;i<=EKG_SEGMENTS;i++){
+    const a = (i/EKG_SEGMENTS) * Math.PI*2;
+    let phase = ((a/(Math.PI*2)) * EKG_BEATS - scrollOffset) % 1;
+    if(phase < 0) phase += 1;
+    const wave = ekgWave(phase) * amp;
+    pts.push(new THREE.Vector3(Math.cos(a)*ekgRadius, ekgHeight + wave, Math.sin(a)*ekgRadius));
+  }
+  return pts;
+}
+
+const ekgMat = new THREE.MeshBasicMaterial({ color: ekgColor, transparent:true, opacity:0.95, blending: THREE.AdditiveBlending, depthWrite:false });
+const ekgGlowMat = new THREE.MeshBasicMaterial({ color: ekgGlowColor, transparent:true, opacity:0.3, blending: THREE.AdditiveBlending, depthWrite:false, side: THREE.DoubleSide });
+
+let ekgMesh = null, ekgGlowMesh = null;
+function rebuildEkg(scrollOffset, amp){
+  const pts = buildEkgPoints(scrollOffset, amp);
+  const curve = new THREE.CatmullRomCurve3(pts, true);
+  const geo = new THREE.TubeGeometry(curve, EKG_SEGMENTS, 0.012, 6, true);
+  const glowGeo = new THREE.TubeGeometry(curve, EKG_SEGMENTS, 0.03, 6, true);
+  if(ekgMesh){ ekgMesh.geometry.dispose(); ekgMesh.geometry = geo; }
+  else { ekgMesh = new THREE.Mesh(geo, ekgMat); scene.add(ekgMesh); }
+  if(ekgGlowMesh){ ekgGlowMesh.geometry.dispose(); ekgGlowMesh.geometry = glowGeo; }
+  else { ekgGlowMesh = new THREE.Mesh(glowGeo, ekgGlowMat); scene.add(ekgGlowMesh); }
+}
+rebuildEkg(0, 0.3);
+
+// small bright "scanner" dots riding on top of each spike, like a monitor's beam
+const ekgDotGeo = new THREE.SphereGeometry(0.05, 12, 10);
+const ekgDots = [];
+for(let i=0;i<EKG_BEATS;i++){
+  const dot = new THREE.Mesh(ekgDotGeo, new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent:true, opacity:0.95, blending: THREE.AdditiveBlending, depthWrite:false
+  }));
+  scene.add(dot);
+  ekgDots.push(dot);
+}
+let ekgScroll = 0;
+
 /* ============ ENVIRONMENT MAP (for reflections/clearcoat) ============ */
 const pmrem = new THREE.PMREMGenerator(renderer);
 const envScene = new THREE.Scene();
@@ -849,6 +915,19 @@ function animate(){
   water.material.uniforms['time'].value += dt;
   updateRain(Math.min(dt, 0.05));
   updateSplashes(dt);
+
+  // EKG heart-monitor ring: scrolls continuously, faster with the mids, and its
+  // spike gets taller/sharper with the bass — like the trace reacting to a beat
+  ekgScroll += dt * (0.22 + mid*0.5 + bass*0.15);
+  const ekgAmp = 0.26 + bass*0.7 + mid*0.12;
+  rebuildEkg(ekgScroll, ekgAmp);
+  const peakWave = ekgWave(EKG_PEAK_PHASE) * ekgAmp;
+  ekgDots.forEach((dot,i)=>{
+    const a = ((ekgScroll + EKG_PEAK_PHASE + i) / EKG_BEATS) * Math.PI*2;
+    dot.position.set(Math.cos(a)*ekgRadius, ekgHeight + peakWave, Math.sin(a)*ekgRadius);
+    dot.scale.setScalar(1 + bass*1.1);
+    dot.material.opacity = 0.7 + bass*0.3;
+  });
 
   // flicker + audio-reactive pulse on the neon signs (the Water surface reflects them live)
   neonSprites.forEach(o => {
