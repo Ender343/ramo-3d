@@ -64,6 +64,11 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Water } from "three/addons/objects/Water.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+// Set to false to go back to the fully procedural, code-generated bouquet
+// instead of loading the real bouquet.glb model.
+const USE_GLB_BOUQUET = true;
 
 /* ---------------------------------------------------------
    RAMO DE ROSAS 3D — cámara orbital + fondo con parallax
@@ -400,6 +405,7 @@ function makeBabyBreath(){
 const bouquet = new THREE.Group();
 scene.add(bouquet);
 
+if(!USE_GLB_BOUQUET){
 const roseHeadPositions = [
   [0,2.55,0, 1.0],
   [-0.45,2.35,0.35, 0.85], [0.45,2.35,-0.35, 0.85], [-0.4,2.4,-0.4,0.82], [0.42,2.32,0.4,0.88],
@@ -619,6 +625,57 @@ const tag2 = new THREE.Mesh(new THREE.PlaneGeometry(0.42,0.42), tag2Mat);
 tag2.position.set(0.05,0.35,1.15);
 tag2.rotation.x = -0.3;
 bouquet.add(tag2);
+} // end if(!USE_GLB_BOUQUET)
+
+if(USE_GLB_BOUQUET){
+  /* Real scanned/generated bouquet model (bouquet.glb) in place of the procedural
+     one. Auto-scaled and re-centered after load since we don't know its native
+     size/pivot in advance — different export tools center/scale differently. */
+  const gltfLoader = new GLTFLoader();
+  gltfLoader.load(
+    'bouquet.glb',
+    (gltf) => {
+      const model = gltf.scene;
+      model.traverse(o => {
+        if(o.isMesh){
+          o.castShadow = true;
+          o.receiveShadow = true;
+          if(o.material){
+            o.material.envMapIntensity = 1.1;
+          }
+        }
+      });
+
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const TARGET_HEIGHT = 3.5; // matches the footprint the rest of the scene (lights, camera target) was tuned for
+      const scale = size.y > 0 ? TARGET_HEIGHT / size.y : 1;
+      model.scale.setScalar(scale);
+
+      const box2 = new THREE.Box3().setFromObject(model);
+      const center2 = box2.getCenter(new THREE.Vector3());
+      model.position.x -= center2.x;
+      model.position.z -= center2.z;
+      model.position.y -= box2.min.y; // sit the stems on the water surface (y=0)
+
+      bouquet.add(model);
+      hideLoadingScreen();
+    },
+    (progress) => {
+      if(progress.total){
+        const pct = Math.round((progress.loaded/progress.total)*100);
+        const loadingEl = document.getElementById('loading');
+        if(loadingEl) loadingEl.textContent = `Floreciendo… ${pct}%`;
+      }
+    },
+    (err) => {
+      console.error('No se pudo cargar bouquet.glb:', err);
+      const loadingEl = document.getElementById('loading');
+      if(loadingEl) loadingEl.textContent = 'No se pudo cargar bouquet.glb — revisa que esté junto a index.html';
+      setTimeout(hideLoadingScreen, 2500);
+    }
+  );
+}
 
 /* ============ 360° NEON CYCLORAMA BACKGROUND ============ */
 /* A flat backdrop only covers the angle it faces — orbit the camera past it and
@@ -870,10 +927,16 @@ function animate(){
 }
 
 const loading = document.getElementById('loading');
-setTimeout(() => {
+function hideLoadingScreen(){
   loading.style.opacity = '0';
   setTimeout(()=> loading.style.display='none', 650);
-}, 400);
+}
+if(!USE_GLB_BOUQUET){
+  // no model to wait for — the procedural bouquet is ready immediately
+  setTimeout(hideLoadingScreen, 400);
+}
+// when USE_GLB_BOUQUET is true, hideLoadingScreen() is called by the GLTFLoader
+// once bouquet.glb finishes loading (see the loader's onLoad/onError above)
 
 animate();
 </script>
